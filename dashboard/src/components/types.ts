@@ -22,9 +22,12 @@ export interface SwarmState {
   type: string;
   drones: Drone[];
   mission: string;
+  mission_pct: number;
+  mission_done?: number;
+  mission_total?: number;
+  mission_targets?: [number, number][];
   estop: boolean;
   coverage: number;
-  mission_pct: number;
   dark_remaining: number;
   alive_count: number;
   events: DashboardEvent[];

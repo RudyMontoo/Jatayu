@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, useEffect, useRef } from "react";
+import { useCallback, useState, useEffect, useRef } from "react";
 import { useSwarm } from "./hooks/useSwarm";
 import { GridMap } from "./components/GridMap";
 import { DroneCard } from "./components/DroneCard";
@@ -57,10 +57,7 @@ function App() {
     [sendAction]
   );
 
-  // Advanced Stats: Raw area coverage
-  const searchedCount = state.coverage || 0;
   const aliveCount = state.alive_count || 0;
-  const missionPct = state.mission_pct || 0;
 
   return (
     <div className="h-screen w-screen bg-[#090a0f] text-white overflow-hidden flex flex-col font-mono selection:bg-cyan-500/30">
@@ -93,10 +90,24 @@ function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-8">
-           <Stat value={`${aliveCount}/${state.drones.length}`} label="NODE_COUNT" accent={aliveCount === state.drones.length} />
-           <Stat value={searchedCount.toLocaleString()} label="AREA_SCAN_UNITS" accent />
-           <Stat value={missionPct > 0 ? `${missionPct}%` : "READY"} label="MISSION_STATUS" accent={missionPct >= 100} />
+        <div className="flex items-center gap-10">
+           <Stat value={`${aliveCount}/8`} label="NODE_COUNT" accent={aliveCount === 8} />
+           
+           {/* Detailed Mission Progress */}
+           <div className="flex flex-col gap-1 items-end min-w-[140px]">
+              <div className="flex justify-between w-full">
+                <div className="text-[9px] text-slate-500 font-bold uppercase tracking-widest leading-none">Mission Progress</div>
+                <div className="text-[10px] text-cyan-400 font-bold leading-none">{state.mission_done ?? 0}/100</div>
+              </div>
+              <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden border border-white/5 shadow-inner">
+                <div 
+                  className="h-full bg-gradient-to-r from-cyan-600 to-emerald-500 rounded-full transition-all duration-1000 shadow-[0_0_8px_rgba(6,182,212,0.4)]"
+                  style={{ width: `${Math.min((state.mission_done ?? 0), 100)}%` }}
+                />
+              </div>
+           </div>
+
+           <Stat value={state.mission_pct > 0 ? `${state.mission_pct}%` : "READY"} label="MISSION_STATUS" accent={state.mission_pct >= 100} />
         </div>
 
         <div className="flex items-center gap-4">
@@ -141,7 +152,11 @@ function App() {
             </div>
             <div className="flex-1 overflow-y-auto pr-2 space-y-3 custom-scrollbar">
               {state.drones.map((d) => (
-                <DroneCard key={d.id} drone={d} />
+                <DroneCard 
+                  key={d.id} 
+                  drone={d} 
+                  onKill={(id) => sendAction({ action: "kill", drone_id: id })} 
+                />
               ))}
             </div>
           </div>

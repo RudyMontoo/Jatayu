@@ -19,6 +19,7 @@ TOPIC_ESTOP         = "nova/estop"
 TOPIC_ESTOP_ACK     = "nova/estop_ack"
 TOPIC_MISSION       = "nova/mission"
 TOPIC_TASK_DONE     = "nova/task_done"
+TOPIC_KILL          = "nova/kill"
 
 # ── GLOBAL MESH & COORDINATES ─────────────────────────────────────────────
 METERS_PER_UNIT = 10.0      # 1 grid unit = 10 meters

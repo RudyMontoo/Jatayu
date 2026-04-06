@@ -1,7 +1,7 @@
-import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useRef, useEffect, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
-import type { SwarmState, Drone } from "./types";
+import type { SwarmState } from "./types";
 
 // PRO-MAX ADVANCED CONSTANTS
 const METERS_PER_UNIT = 10.0;
@@ -46,6 +46,7 @@ export function GridMap({
   const linkLayerRef = useRef<L.LayerGroup | null>(null);
   const gridLayerRef = useRef<L.LayerGroup | null>(null);
   const targetLayerRef = useRef<L.LayerGroup | null>(null);
+  const problemLayerRef = useRef<L.LayerGroup | null>(null);
 
   const [is3D, setIs3D] = useState(false);
   const [target, setTarget] = useState<{
@@ -86,6 +87,7 @@ export function GridMap({
     gridLayerRef.current = L.layerGroup().addTo(map);
     linkLayerRef.current = L.layerGroup().addTo(map);
     targetLayerRef.current = L.layerGroup().addTo(map);
+    problemLayerRef.current = L.layerGroup().addTo(map);
     mapRef.current = map;
 
     return () => {
@@ -222,6 +224,26 @@ export function GridMap({
       }).addTo(tl);
     }
   }, [target]);
+
+  // ── Mission Sub-Targets (Problems) ──
+  useEffect(() => {
+    const pl = problemLayerRef.current;
+    if (!pl) return;
+    pl.clearLayers();
+
+    if (state.mission_targets) {
+      state.mission_targets.forEach(([tx, ty]: [number, number]) => {
+        const pos = gridToLatLng(tx, ty);
+        L.circleMarker([pos.lat, pos.lng], {
+          radius: 3,
+          color: "#f59e0b", // Amber
+          fillColor: "#f59e0b",
+          fillOpacity: 1,
+          weight: 1
+        }).addTo(pl);
+      });
+    }
+  }, [state.mission_targets]);
 
   return (
     <div className="w-full h-full relative">

@@ -13,9 +13,51 @@ from mesh.nova_mesh import NovaMesh
 from ws_bridge import WsBridge
 from swarm.crdt_map import CRDTMap
 
-# ──────── Advanced Simulation Controller ────────
-# Handles 8 drones in a global sparse coordinate space.
-# 1 unit = 10 meters.
+# ── 100-Task Mission Controller ──
+# Generates and tracks the status of 100 sub-problems in the target zone.
+class MissionController:
+    def __init__(self):
+        self.tasks = []       # List of [x, y]
+        self.completed = 0
+        self.total = 100
+        self.is_active = False
+        self.mesh = None # To be set locally
+
+    def start_new_mission(self, centerX, centerY, radius=10):
+        self.tasks = []
+        self.completed = 0
+        self.is_active = True
+        # Generate 100 problems in the red zone
+        for _ in range(self.total):
+            # Uniform distribution in a circle
+            angle = random.uniform(0, 2 * math.pi)
+            r = radius * math.sqrt(random.uniform(0, 1))
+            tx = centerX + r * math.cos(angle)
+            ty = centerY + r * math.sin(angle)
+            self.tasks.append([tx, ty])
+        
+        # Publish targets to mesh so dashboard can visualize
+        if self.mesh:
+            asyncio.create_task(self.mesh.publish(config.TOPIC_MISSION + "/targets", {
+                "targets": self.tasks,
+                "timestamp": time.time()
+            }))
+        print(f"[MISSION] Controller initialized with {self.total} tasks at ({centerX}, {centerY})")
+
+    def get_next_task(self):
+        if not self.tasks:
+            return None
+        return self.tasks.pop(0)
+
+    def mark_complete(self):
+        self.completed += 1
+        if self.completed >= self.total:
+            self.is_active = False
+            return True # Mission Accomplished
+        return False
+
+# Global Mission instance
+mission_ctrl = MissionController()
 
 class DroneAgent:
     def __init__(self, drone_id, start_pos, mesh):
@@ -45,24 +87,44 @@ class DroneAgent:
                 if dist > 0.5:
                     # 4 units per 0.5s = 8 units/s = 80m/s
                     speed = 4.0 
-                    self.pos[0] += (dx / dist) * speed
-                    self.pos[1] += (dy / dist) * speed
+                    if dist < speed:
+                        self.pos = list(self.target) # Exact arrival
+                    else:
+                        self.pos[0] += (dx / dist) * speed
+                        self.pos[1] += (dy / dist) * speed
                     self.status = "FLYING"
                 else:
                     # 2. Arrived at target? Task Completion Logic
-                    if self.status == "FLYING" and dist <= 1.0:
+                    if self.status == "FLYING":
                         self.tasks_done += 1
-                        print(f"[TASK] {self.drone_id} cleared zone #{self.tasks_done}")
+                        print(f"[TASK] {self.drone_id} cleared sub-task #{self.tasks_done}")
+                        # Report to Mission Status
+                        if mission_ctrl.is_active:
+                            finished = mission_ctrl.mark_complete()
+                            if finished:
+                                print("[MISSION] ALL 100 TASKS COMPLETE. STOPPING SWARM.")
+
                         await self.mesh.publish(config.TOPIC_TASK_DONE, {
                             "drone_id": self.drone_id,
                             "event": "DONE",
                             "tasks_done": self.tasks_done,
-                            "cell": [round(self.pos[0]), round(self.pos[1])]
+                            "cell": [self.pos[0], self.pos[1]] # Precise float
                         })
-                    self.status = "HOVER"
+
+                        # Fetch next task from Mission Controller
+                        if mission_ctrl.is_active:
+                            next_t = mission_ctrl.get_next_task()
+                            if next_t:
+                                self.target = next_t
+                            else:
+                                self.status = "HOVER"
+                        else:
+                            self.status = "HOVER"
+                    else:
+                        self.status = "HOVER"
 
                 # 3. Randomized Crash Logic (Simulation)
-                if self.status == "FLYING" and random.random() < 0.002:
+                if self.status == "FLYING" and random.random() < 0.0:  # Crashes disabled for Demo
                     self.alive = False
                     self.status = "💀 CRASHED"
                     print(f"[CRASH] {self.drone_id} HAS STALLED at {self.pos}")
@@ -73,8 +135,8 @@ class DroneAgent:
                     })
                     break
 
-                # Battery Drain
-                self.battery -= (0.1 if self.status == "FLYING" else 0.05)
+                # Battery Drain (10x longer life for Demo)
+                self.battery -= (0.01 if self.status == "FLYING" else 0.005)
                 if self.battery <= 0:
                     self.alive = False
                     self.status = "DEAD"
@@ -111,6 +173,7 @@ async def main():
     bridge.target_handler = bridge_mesh.broadcast
     bridge._on_publish_estop = bridge_mesh.publish
     bridge._on_publish_mission = bridge_mesh.publish
+    bridge._on_publish_kill = bridge_mesh.publish
 
     await bridge_mesh.start()
     await bridge.start_server()
@@ -127,6 +190,7 @@ async def main():
     for i in range(8):
         did = f"drone_{i+1}"
         d_mesh = NovaMesh(did, "MOCK")
+        mission_ctrl.mesh = d_mesh # Shared mesh reference for mission controller
         await d_mesh.start()
         
         agent = DroneAgent(did, start_positions[i], d_mesh)
@@ -140,12 +204,23 @@ async def main():
                 if "goto_target" in topic or "dispatch_dots" in topic:
                     tgt = payload
                     if tgt and (tgt.get('x') is not None):
-                        # Spread drones out in the red zone
-                        off_x = random.uniform(-6, 6)
-                        off_y = random.uniform(-6, 6)
-                        a.target = [float(tgt['x']) + off_x, float(tgt['y']) + off_y]
-                        a.current_mission_target = tgt
-                        print(f"[MISSION] {a.drone_id} heading to offset target {a.target}")
+                        # 100 Task Mission Initiation (If not already active or if new target)
+                        if not mission_ctrl.is_active:
+                            mission_ctrl.start_new_mission(float(tgt['x']), float(tgt['y']))
+                        
+                        # Assign drone its first/next sub-task
+                        next_t = mission_ctrl.get_next_task()
+                        if next_t:
+                            a.target = next_t
+                            a.current_mission_target = tgt
+                            print(f"[MISSION] {a.drone_id} assigned sub-task {a.target}")
+                        else:
+                            # Spread drones out in the red zone fallback
+                            off_x = random.uniform(-6, 6)
+                            off_y = random.uniform(-6, 6)
+                            a.target = [float(tgt['x']) + off_x, float(tgt['y']) + off_y]
+                            a.current_mission_target = tgt
+                            print(f"[MISSION] {a.drone_id} heading to fallback target {a.target}")
                 
                 # Handle Emergency Stop / Reset
                 if topic == config.TOPIC_ESTOP:
@@ -156,6 +231,13 @@ async def main():
                     elif etype == "RESET":
                         a.emergency_stopped = False
                         print(f"[ESTOP] {a.drone_id} RESUMED.")
+                
+                # Handle Manual Kill (Simulated Crash)
+                elif topic == config.TOPIC_KILL:
+                    if payload.get("drone_id") == a.drone_id:
+                        a.alive = False
+                        a.status = "💀 CRASHED"
+                        print(f"[CRASH] {a.drone_id} KILLED by operator.")
                 
                 # Takeover logic for LEADER
                 if a.role == "decision" and topic.endswith("/task_done") and payload.get("event") == "CRASH":

@@ -33,6 +33,9 @@ class WsBridge:
         self.searched_cells: int = 0
         self.dark_zone_total: int = 0    # cells marked dark at dispatch time
         self.mission_active: bool = False
+        self.mission_tasks_total: int = 100
+        self.mission_tasks_done: int = 0
+        self.mission_targets: list = [] # To be drawn on map
         self.server = None
         self._last_broadcast = 0
 
@@ -105,6 +108,33 @@ class WsBridge:
                 if did in self.drones:
                     self.drones[did]["tasks_done"] = self.drone_stats[did]["tasks_done"]
                 count = self.drone_stats[did]["tasks_done"]
+                
+                # Global Mission Progress
+                if self.mission_active:
+                    self.mission_tasks_done += 1
+                    
+                    # Remove the nearest target from the visualization list
+                    if self.mission_targets:
+                        # Payloads from main.py cell format is [x, y]
+                        p_cell = payload.get("cell", [0, 0])
+                        dx = p_cell[0] # x
+                        dy = p_cell[1] # y
+                        best_idx = -1
+                        min_dist = 9999
+                        for i, (tx, ty) in enumerate(self.mission_targets):
+                            d = ((tx - dx)**2 + (ty - dy)**2)**0.5
+                            if d < min_dist:
+                                min_dist = d
+                                best_idx = i
+                        # Distance check for task removal (in simulation units)
+                        if best_idx >= 0 and min_dist < 10.0: 
+                            self.mission_targets.pop(best_idx)
+
+                    if self.mission_tasks_done >= self.mission_tasks_total:
+                        self.mission_active = False
+                        ts_m = time.strftime("%H:%M:%S")
+                        self.events.append({"ts": ts_m, "kind": "MISSION", "msg": "🏆 100-TASK MISSION COMPLETE! Swarm holding position."})
+
                 self.events.append({"ts": ts, "kind": "TASK",
                                     "msg": f"{did} cleared zone #{count}"})
                 self._trim_events()
@@ -145,6 +175,17 @@ class WsBridge:
                 self.events.append({"ts": ts, "kind": "MISSION",
                                     "msg": f"Mission set to: {mission}"})
                 self._trim_events()
+        
+        elif topic.endswith("/mission/targets"):
+            targets = payload.get("targets", [])
+            self.mission_targets = targets
+            self.mission_tasks_total = len(targets)
+            self.mission_tasks_done = 0
+            self.mission_active = True
+            ts = time.strftime("%H:%M:%S")
+            self.events.append({"ts": ts, "kind": "INFO", 
+                                "msg": f"NEW MISSION: {self.mission_tasks_total} sub-tasks generated"})
+            self._trim_events()
 
         elif topic.endswith("/estop"):
             self.estop_active = True
@@ -190,7 +231,10 @@ class WsBridge:
             "mission": self.current_mission,
             "estop": self.estop_active,
             "coverage": round(self.searched_cells, 1),
-            "mission_pct": mission_pct,
+            "mission_pct": mission_pct if not self.mission_active else round((self.mission_tasks_done / self.mission_tasks_total * 100), 1),
+            "mission_done": self.mission_tasks_done,
+            "mission_total": self.mission_tasks_total,
+            "mission_targets": self.mission_targets,
             "dark_remaining": dark_remaining,
             "alive_count": alive_count,
             "events": self.events[-15:],
@@ -289,8 +333,12 @@ class WsBridge:
             radius = target_grid.get("radius", 10) if target_grid else 10
             self.events.append({"ts": ts, "kind": "TARGET",
                                 "msg": f"Target: ({target_grid.get('x','?')}, {target_grid.get('y','?')}) r={radius}"})
-        
-        await self._broadcast(force=True)
+        elif action == "kill":
+            drone_id = data.get("drone_id")
+            if drone_id and hasattr(self, '_on_publish_kill') and self._on_publish_kill:
+                await self._on_publish_kill(config.TOPIC_KILL, {"drone_id": drone_id})
+                ts = time.strftime("%H:%M:%S")
+                self.events.append({"ts": ts, "kind": "DAMAGE", "msg": f"Manual KILL signal sent to {drone_id}"})
 
     async def stop(self):
         if self.server:
